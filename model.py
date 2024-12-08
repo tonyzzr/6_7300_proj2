@@ -12,6 +12,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn import preprocessing
 
 from dataset import PatientDataset
+from loss import UtilityLoss
 
 
 #@title class BaseModel():
@@ -167,7 +168,7 @@ class MLP(nn.Module):
     
 # Define the Enhanced MLP Model
 class EnhancedMLP(nn.Module):
-    def __init__(self, input_dim, hidden_sizes=[60, 60, 60]):
+    def __init__(self, input_dim, hidden_sizes=[60, 30, 10]):
         super(EnhancedMLP, self).__init__()
         self.input_dim = input_dim
         self.hidden_sizes = hidden_sizes
@@ -203,23 +204,47 @@ class NeuralNetModel(BaseModel):
 
         final_features = []
         final_labels = []
+        final_patient_spesis_labels= []
+        final_patient_spesis_time = []
+
+        # print(data.__getitem__(0))
+
+
         for x, y in data:
 
             # x is a single patient's features over their entire history: (t, n_features)
             # y is a single patient's outcomes over their entire history: (t,)
 
             # walk over the patient's history and create a feature vector for each timestep
+            sepsis_flag = 0
+            sepsis_flag_time = 0
             for t in range(len(x)):
                 history_up_to_timestep_t = x[:t+1]
                 label_at_timestep_t = y[t]
                 final_features.append(self.process_history(history_up_to_timestep_t))
                 final_labels.append(label_at_timestep_t)
 
+                if label_at_timestep_t and (not sepsis_flag):
+                    sepsis_flag = 1
+                    sepsis_flag_time = t
+            
+            if sepsis_flag:
+                final_patient_spesis_labels += [1]*len(x)
+                final_patient_spesis_time += [sepsis_flag_time]*len(x)
+            else:
+                final_patient_spesis_labels += [0]*len(x)
+                final_patient_spesis_time += [np.nan]*len(x)                
+
         # final_features = np.array(final_features)
         # final_labels = np.array(final_labels)
 
         self.X_train = np.array(final_features)
-        self.y_train = np.array(final_labels)
+        self.y_train = np.array(final_labels).reshape(-1, 1)
+        self.sepsis_flag = np.array(final_patient_spesis_labels).reshape(-1, 1)
+        self.sepsis_time = np.array(final_patient_spesis_time).reshape(-1, 1)
+        self.y_with_sepsis_flag = np.concatenate((self.y_train, 
+                                                  self.sepsis_flag,
+                                                  self.sepsis_time), axis=1)
 
         scaler = preprocessing.StandardScaler().fit(self.X_train)
         self.X_scaled = scaler.transform(self.X_train)
@@ -227,11 +252,11 @@ class NeuralNetModel(BaseModel):
         # NN-specific
         final_dataset = FinalDataset(
             x = torch.tensor(self.X_scaled).float().to(self.config['device']),
-            y = torch.tensor(self.y_train).float().to(self.config['device']),
+            y = torch.tensor(self.y_with_sepsis_flag).float().to(self.config['device']),
         )
 
         if class_balanced:
-            targets = [label.cpu().int() for _, label in final_dataset]
+            targets = [label[0].cpu().int() for _, label in final_dataset]
             class_counts = torch.tensor([targets.count(0), targets.count(1)])  # Counts for each class
             class_weights = 1.0 / class_counts
             sample_weights = [class_weights[label] for label in targets]
@@ -249,15 +274,23 @@ class NeuralNetModel(BaseModel):
         
 
     def fit(self, 
-            train_data: PatientDataset, 
-            val_data: PatientDataset,
+            # train_data: PatientDataset, 
+            # val_data: PatientDataset,
+            data:dict,
             config={},
             ) -> None:
 
+        self.data = data
+
+        train_data = data['train']
+        val_data = data['val']
+
+        # print(train_data)
 
         self.config = config
+        self.writer = config['writer']
         final_dataloader_train = self.preprocess(train_data, class_balanced=self.config['class_balanced'])
-        final_dataloader_val = self.preprocess(val_data)     
+        final_dataloader_val = self.preprocess(val_data, class_balanced=False)     
 
         input_dim = self.X_scaled.shape[1]
         print(f'input_dim = {input_dim}')
@@ -274,7 +307,13 @@ class NeuralNetModel(BaseModel):
             cm_epoch = {
                 'TP':0, 'TN':0, 'FP':0, 'FN':0,
             }
-            for x, y in final_dataloader_train:
+            for x, y_with_sepsis_flag in final_dataloader_train:
+
+                y = y_with_sepsis_flag[:, 0]
+                sepsis_flags = y_with_sepsis_flag[:, 1]
+                sepsis_times = y_with_sepsis_flag[:, 2]
+                current_times = x[:, 0]
+
                 self.optimizer.zero_grad()
 
                 # print(f'x.size() = {x.size()}')
@@ -283,7 +322,16 @@ class NeuralNetModel(BaseModel):
                 # print(f'y_pred.size() = {y_pred.size()}')
                 # print(f'y.size() = {y.size()}')
 
-                loss = self.criteria(y_pred, y)
+                if isinstance(self.criteria, UtilityLoss):
+                    loss = self.criteria(y_pred, 
+                                         y, 
+                                         sepsis_flags=sepsis_flags, 
+                                         sepsis_times=sepsis_times,
+                                         current_times=current_times,
+                                         )
+                    # print(loss)
+                else:
+                    loss = self.criteria(y_pred, y)
 
                 loss.backward()
                 self.optimizer.step()
@@ -307,17 +355,34 @@ class NeuralNetModel(BaseModel):
             # for key in cm_epoch:
             #     cm_epoch[key] /= len(self.y_train)
 
-            self.loss_hist.append(
-                {
-                    'train': np.mean(np.array(loss_epoch)),
-                    'val': val_loss,
-                    'cm': cm_epoch,
-                }
-            )
+            if isinstance(self.criteria, UtilityLoss):
+                self.loss_hist.append(
+                    {
+                        'train': np.sum(np.array(loss_epoch)),
+                        'val': val_loss,
+                        'cm': cm_epoch,
+                    }
+                )
+            else:
+
+                self.loss_hist.append(
+                    {
+                        'train': np.mean(np.array(loss_epoch)),
+                        'val': val_loss,
+                        'cm': cm_epoch,
+                    }
+                )
             
 
             print(f"Epoch [{epoch+1}/{config['n_epoch']}], Training Loss: {self.loss_hist[-1]['train']:.4f}, Val Loss: {self.loss_hist[-1]['val']:.4f}")
             print(f"confusion matrix: {self.loss_hist[-1]['cm']}")
+            self.writer.add_scalar('Loss/train', self.loss_hist[-1]['train'], epoch)
+            self.writer.add_scalar('Loss/val', self.loss_hist[-1]['val'], epoch)
+            
+
+
+            test_utility = self.test_utility()
+            self.writer.add_scalar('Utility/test', test_utility, epoch)
 
         print("Training complete.")
 
@@ -332,6 +397,8 @@ class NeuralNetModel(BaseModel):
         if len(x.shape) < 2:
             x = x.reshape(1, -1)
 
+        t = np.array([x.shape[0]])
+
         # x_mean = np.mean(x, axis=0)
         # x_std = np.std(x, axis = 0)
         x_2hr_mean = x[-min(x.shape[0], 2):, :].mean(axis=0)
@@ -341,7 +408,9 @@ class NeuralNetModel(BaseModel):
         x_12hr_mean = x[-min(x.shape[0], 12):, :].mean(axis=0)
         
 
-        return np.concatenate((x[-1], 
+        return np.concatenate((
+                               t,
+                               x[-1], 
                                x_2hr_mean, 
                                x_3hr_mean, 
                                x_5hr_mean, 
@@ -375,13 +444,48 @@ class NeuralNetModel(BaseModel):
 
         with torch.no_grad():
             loss_val = []
-            for x, y in final_dataloader_val:
+            for x, y_with_sepsis_flag in final_dataloader_val:
+
+                y = y_with_sepsis_flag[:, 0]
+                sepsis_flags = y_with_sepsis_flag[:, 1]
+                sepsis_times = y_with_sepsis_flag[:, 2]
+                current_times = x[:, 0]
+
                 y_pred = self.model(x).squeeze(1)
 
-                loss = self.criteria(y_pred, y)
+                if isinstance(self.criteria, UtilityLoss):
+                    loss = self.criteria(y_pred, 
+                                         y, 
+                                         sepsis_flags=sepsis_flags, 
+                                         sepsis_times=sepsis_times,
+                                         current_times=current_times,
+                                         )
+                    # print(loss)
+                else:
+                    loss = self.criteria(y_pred, y)
+
                 loss_val.append(loss.item())
 
-        return np.mean(np.array(loss_val))
+        if isinstance(self.criteria, UtilityLoss):
+            return np.sum(np.array(loss_val))
+        else:
+            return np.mean(np.array(loss_val))
+    
+    def test_utility(self, ):
+        from utils import UtilityFunction, RealOutcomesSimulator
+
+        utility_fn = UtilityFunction()
+        simulator_test = RealOutcomesSimulator(self.data['test'], utility_fn)
+
+        utility = simulator_test.compute_utility(self)
+        print(f" test - utility achieved is: {utility['u_total']:.4f}")
+        # print(f"example prediction {utility['preds'][0]}")
+        print(f"test - confusion matrix {utility['cm']}")
+
+        
+
+        return utility['u_total']
+
 
 
 #####

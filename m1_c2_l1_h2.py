@@ -1,7 +1,7 @@
 import torch.nn as nn
 
 from model import NeuralNetModel, LogisticRegressionClassifier
-from dataset import PatientDataset, M1Imputation
+from dataset import PatientDataset, M1Imputation, M2Imputation
 from utils import UtilityFunction, RealOutcomesSimulator
 
 import torch
@@ -10,11 +10,22 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
-from torch.utils.tensorboard import SummaryWriter
 
+from model import EnhancedMLP
+
+from loss import CustomBCELoss, UtilityLoss
+
+def data_imputation(datasets={}, method=M2Imputation):
+
+    imputed_datasets = {}
+    
+    for key in datasets.keys():
+        m = method(dataset=datasets[key])
+        imputed_datasets[key] = m.impute_dataset()
+
+    return imputed_datasets
 
 if __name__ == "__main__":
-
     # Set the random seed for PyTorch
     seed = 42  # Choose any integer
     torch.manual_seed(seed)
@@ -40,37 +51,42 @@ if __name__ == "__main__":
     print(f"Val: {len(dataset_val)} patients")
     print(f"Test: {len(dataset_test)} patients")
 
-    m1 = M1Imputation(dataset=dataset_train)
-    dataset_train_m1_imputed = m1.impute_dataset()
 
-    m1val = M1Imputation(dataset=dataset_val)
-    dataset_val_m1_imputed = m1val.impute_dataset()
+    '''
+        M1 - C2 - L1 - H2
+    '''
+    from torch.utils.tensorboard import SummaryWriter
 
-    m1test = M1Imputation(dataset=dataset_test)
-    dataset_test_m1_imputed = m1test.impute_dataset()
+    writer = SummaryWriter('runs/m1_c2_l1_h2')
 
-    input_dim = dataset_train[0][0].shape[1] * 6
+    imputed_datasets = data_imputation(
+        datasets={
+            'train':dataset_train, 'val':dataset_val, 'test':dataset_test,
+        },
+        method=M1Imputation # M1
+    )
 
     my_model = NeuralNetModel()
     device = 'cuda'
     my_model.fit(
-        train_data = dataset_train_m1_imputed,
-        val_data = dataset_val_m1_imputed,
+        data = imputed_datasets,
         config = {
-        'classifer':LogisticRegressionClassifier(input_dim=input_dim).to(device),
-        'lr':1e-2, 
-        'criteria':nn.BCELoss(), 
-        'n_epoch':0,
+        'classifer':EnhancedMLP, # H2
+        'lr':1e-3, 
+        'criteria':CustomBCELoss(scale_factor=1),  # L1
+        'n_epoch':50,
         'batch_size':128,
         'device':device,
+        'class_balanced':True, # C2
+        'writer':writer,
         })
 
     utility_fn = UtilityFunction()
-    simulator_test = RealOutcomesSimulator(dataset_train_m1_imputed, utility_fn)
+    simulator_test = RealOutcomesSimulator(imputed_datasets['train'], utility_fn)
     # print(f"\nSimulating the hospitalization of patients in the test dataset with decisions made by your model, the utility achieved is: {simulator_test.compute_utility(my_model)}")
     utility = simulator_test.compute_utility(my_model)
     print(f" the utility achieved is: {utility['u_total']}")
 
-    plt.plot(utility['preds'][0], '.')
-    plt.plot(dataset_val_m1_imputed[0][1], '.')
-    plt.show()
+
+
+

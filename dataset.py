@@ -107,7 +107,8 @@ class M1Imputation():
             x, y = self.dataset.data[patient_idx]
             imputed_data.append((self.impute_data(x, global_mean_features), y))
 
-        self.dataset_filled = imputed_data
+        self.dataset_filled = PatientDataset(data=imputed_data, 
+                                             feature_names=self.dataset.feature_names)
 
         return self.dataset_filled
 
@@ -129,9 +130,10 @@ class M2Imputation(M1Imputation):
                                                   global_mean_features), 
                                                   y))
 
-        self.dataset_filled = imputed_data
-        
-        return self.dataset_filled 
+        self.dataset_filled = PatientDataset(data=imputed_data, 
+                                             feature_names=self.dataset.feature_names)
+
+        return self.dataset_filled
     
     def impute_data(self, x, local_mean_features, global_mean_features):
         

@@ -18,7 +18,7 @@ if __name__ == "__main__":
     my_model.fit(dataset_train)
 
     utility_fn = UtilityFunction()
-    simulator_test = RealOutcomesSimulator(dataset_train, utility_fn)
+    simulator_test = RealOutcomesSimulator(dataset_test, utility_fn)
     
     utility = simulator_test.compute_utility(my_model)
     print(f"the utility achieved is: {utility['u_total']}")
