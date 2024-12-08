@@ -198,8 +198,11 @@ class EnhancedMLP(nn.Module):
         return torch.sigmoid(x)
     
 class NeuralNetModel(BaseModel):
+    def __init__(self):
+        super().__init__()
+        self.scaler = None
 
-    def preprocess(self, data, class_balanced=False):
+    def preprocess(self, data, class_balanced=False, mode='train'):
         from torch.utils.data import WeightedRandomSampler
 
         final_features = []
@@ -250,8 +253,13 @@ class NeuralNetModel(BaseModel):
                                                   self.sepsis_time,
                                                   self.current_time), axis=1)
 
-        scaler = preprocessing.StandardScaler().fit(self.X_train)
-        self.X_scaled = scaler.transform(self.X_train)
+        if self.scaler is None:
+            self.scaler = preprocessing.StandardScaler().fit(self.X_train)
+            self.X_scaled = self.scaler.transform(self.X_train)
+            print('Scaler created!')
+        else:
+            print('Scaler already exist!')
+            self.X_scaled = self.scaler.transform(self.X_train)
 
         # NN-specific
         final_dataset = FinalDataset(
@@ -288,13 +296,16 @@ class NeuralNetModel(BaseModel):
 
         train_data = data['train']
         val_data = data['val']
+        test_data = data['test']
 
         # print(train_data)
 
         self.config = config
         self.writer = config['writer']
         final_dataloader_train = self.preprocess(train_data, class_balanced=self.config['class_balanced'])
-        final_dataloader_val = self.preprocess(val_data, class_balanced=False)     
+        final_dataloader_val = self.preprocess(val_data, class_balanced=False) 
+        final_dataloader_test = self.preprocess(test_data, class_balanced=False)
+            
 
         input_dim = self.X_scaled.shape[1]
         print(f'input_dim = {input_dim}')
@@ -388,8 +399,14 @@ class NeuralNetModel(BaseModel):
             self.writer.add_scalar('Loss/train', self.loss_hist[-1]['train'], epoch)
             self.writer.add_scalar('Loss/val', self.loss_hist[-1]['val'], epoch)
             
-            test_utility = self.test_utility()
-            self.writer.add_scalar('Utility/test', test_utility, epoch)
+            # test_utility = self.test_utility()
+            # self.writer.add_scalar('Utility/test', test_utility, epoch)
+
+            test_utility_fast = self.test_utility_fast(final_dataloader_test)
+            self.writer.add_scalar('Utility/test_fast', test_utility_fast, epoch)
+
+            val_utility_fast = self.val_utility_fast(final_dataloader_val)
+            self.writer.add_scalar('Utility/val_fast', val_utility_fast, epoch)
 
         print("Training complete.")
 
@@ -491,11 +508,86 @@ class NeuralNetModel(BaseModel):
         # print(f"example prediction {utility['preds'][0]}")
         print(f"test - confusion matrix {utility['cm']}")
 
-        
+        return utility['u_total']
+    
+    def test_utility_fast(self, final_dataloader_test):
+
+        self.model.eval()
+        criteria = UtilityLoss()
+
+        with torch.no_grad():
+            loss_val = []
+            for x, y_with_sepsis_flag in final_dataloader_test:
+
+                y = y_with_sepsis_flag[:, 0]
+                sepsis_flags = y_with_sepsis_flag[:, 1]
+                sepsis_times = y_with_sepsis_flag[:, 2]
+                current_times = y_with_sepsis_flag[:, 3]
+
+                y_pred = self.model(x).squeeze(1)
+                y_pred_binary = (y_pred >= 0.5)
+                
+
+                
+                loss = criteria(y_pred, 
+                                y_pred_binary.float(), 
+                                sepsis_flags=sepsis_flags, 
+                                sepsis_times=sepsis_times,
+                                current_times=current_times,
+                                )
+
+                loss_val.append(loss.item())
+
+
+        utility_loss = np.sum(np.array(loss_val))
+        print(f" test (fast) - utility achieved is: {-utility_loss:.4f}")
+
+        return utility_loss
+    
+    def val_utility_fast(self, final_dataloader_val):
+
+        self.model.eval()
+        criteria = UtilityLoss()
+
+        with torch.no_grad():
+            loss_val = []
+            for x, y_with_sepsis_flag in final_dataloader_val:
+
+                y = y_with_sepsis_flag[:, 0]
+                sepsis_flags = y_with_sepsis_flag[:, 1]
+                sepsis_times = y_with_sepsis_flag[:, 2]
+                current_times = y_with_sepsis_flag[:, 3]
+
+                y_pred = self.model(x).squeeze(1)
+                y_pred_binary = (y_pred >= 0.5)
+
+                
+                loss = criteria(y_pred, 
+                                y_pred_binary.float(), 
+                                sepsis_flags=sepsis_flags, 
+                                sepsis_times=sepsis_times,
+                                current_times=current_times,
+                                )
+
+                loss_val.append(loss.item())
+
+        utility_loss = np.sum(np.array(loss_val))
+        print(f" val (fast) - utility achieved is: {-utility_loss:.4f}")
+
+        return utility_loss
+
+    def val_utility(self, ):
+        from utils import UtilityFunction, RealOutcomesSimulator
+
+        utility_fn = UtilityFunction()
+        simulator_test = RealOutcomesSimulator(self.data['val'], utility_fn)
+
+        utility = simulator_test.compute_utility(self)
+        print(f" test - utility achieved is: {utility['u_total']:.4f}")
+        # print(f"example prediction {utility['preds'][0]}")
+        print(f"test - confusion matrix {utility['cm']}")
 
         return utility['u_total']
-
-
 
 #####
 
