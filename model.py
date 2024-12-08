@@ -206,6 +206,7 @@ class NeuralNetModel(BaseModel):
         final_labels = []
         final_patient_spesis_labels= []
         final_patient_spesis_time = []
+        current_time = []
 
         # print(data.__getitem__(0))
 
@@ -217,12 +218,13 @@ class NeuralNetModel(BaseModel):
 
             # walk over the patient's history and create a feature vector for each timestep
             sepsis_flag = 0
-            sepsis_flag_time = 0
+            sepsis_flag_time = np.inf
             for t in range(len(x)):
                 history_up_to_timestep_t = x[:t+1]
                 label_at_timestep_t = y[t]
                 final_features.append(self.process_history(history_up_to_timestep_t))
                 final_labels.append(label_at_timestep_t)
+                current_time.append(t)
 
                 if label_at_timestep_t and (not sepsis_flag):
                     sepsis_flag = 1
@@ -233,7 +235,7 @@ class NeuralNetModel(BaseModel):
                 final_patient_spesis_time += [sepsis_flag_time]*len(x)
             else:
                 final_patient_spesis_labels += [0]*len(x)
-                final_patient_spesis_time += [np.nan]*len(x)                
+                final_patient_spesis_time += [np.inf]*len(x)                
 
         # final_features = np.array(final_features)
         # final_labels = np.array(final_labels)
@@ -242,9 +244,11 @@ class NeuralNetModel(BaseModel):
         self.y_train = np.array(final_labels).reshape(-1, 1)
         self.sepsis_flag = np.array(final_patient_spesis_labels).reshape(-1, 1)
         self.sepsis_time = np.array(final_patient_spesis_time).reshape(-1, 1)
+        self.current_time = np.array(current_time).reshape(-1, 1)
         self.y_with_sepsis_flag = np.concatenate((self.y_train, 
                                                   self.sepsis_flag,
-                                                  self.sepsis_time), axis=1)
+                                                  self.sepsis_time,
+                                                  self.current_time), axis=1)
 
         scaler = preprocessing.StandardScaler().fit(self.X_train)
         self.X_scaled = scaler.transform(self.X_train)
@@ -312,12 +316,15 @@ class NeuralNetModel(BaseModel):
                 y = y_with_sepsis_flag[:, 0]
                 sepsis_flags = y_with_sepsis_flag[:, 1]
                 sepsis_times = y_with_sepsis_flag[:, 2]
-                current_times = x[:, 0]
+                current_times = y_with_sepsis_flag[:, 3]
 
                 self.optimizer.zero_grad()
 
                 # print(f'x.size() = {x.size()}')
+
                 y_pred = self.model(x).squeeze(1)
+                # y_pred = self.model(x).squeeze(1) * 0 # FOR UTILITY LOSS DEBUG ONLY
+                # y_pred = self.model(x).squeeze(1) * 0 + 1 # FOR UTILITY LOSS DEBUG ONLY
 
                 # print(f'y_pred.size() = {y_pred.size()}')
                 # print(f'y.size() = {y.size()}')
@@ -333,8 +340,10 @@ class NeuralNetModel(BaseModel):
                 else:
                     loss = self.criteria(y_pred, y)
 
+                # # COMMENT HERE FOR UTILITY LOSS DEBUG ONLY
                 loss.backward()
                 self.optimizer.step()
+                # # COMMENT HERE FOR UTILITY LOSS DEBUG ONLY
 
                 loss_epoch.append(loss.item())
 
@@ -379,8 +388,6 @@ class NeuralNetModel(BaseModel):
             self.writer.add_scalar('Loss/train', self.loss_hist[-1]['train'], epoch)
             self.writer.add_scalar('Loss/val', self.loss_hist[-1]['val'], epoch)
             
-
-
             test_utility = self.test_utility()
             self.writer.add_scalar('Utility/test', test_utility, epoch)
 
@@ -449,9 +456,11 @@ class NeuralNetModel(BaseModel):
                 y = y_with_sepsis_flag[:, 0]
                 sepsis_flags = y_with_sepsis_flag[:, 1]
                 sepsis_times = y_with_sepsis_flag[:, 2]
-                current_times = x[:, 0]
+                current_times = y_with_sepsis_flag[:, 3]
 
                 y_pred = self.model(x).squeeze(1)
+                # y_pred = self.model(x).squeeze(1) * 0 # FOR UTILITY LOSS DEBUG ONLY
+                # y_pred = self.model(x).squeeze(1) * 0 + 1 # FOR UTILITY LOSS DEBUG ONLY
 
                 if isinstance(self.criteria, UtilityLoss):
                     loss = self.criteria(y_pred, 

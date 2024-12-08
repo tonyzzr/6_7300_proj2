@@ -24,3 +24,19 @@ if __name__ == "__main__":
     print(f"the utility achieved is: {utility['u_total']}")
     print(f"example prediction {utility['preds'][0]}")
     print(f"confusion matrix {utility['cm']}")
+
+    utility_fn = UtilityFunction()
+    simulator_test = RealOutcomesSimulator(dataset_train, utility_fn)
+    
+    utility = simulator_test.compute_utility(my_model)
+    print(f"train utility achieved is: {utility['u_total']}")
+    print(f"example prediction {utility['preds'][0]}")
+    print(f"confusion matrix {utility['cm']}")
+
+    utility_fn = UtilityFunction()
+    simulator_test = RealOutcomesSimulator(dataset_val, utility_fn)
+    
+    utility = simulator_test.compute_utility(my_model)
+    print(f"val utility achieved is: {utility['u_total']}")
+    print(f"example prediction {utility['preds'][0]}")
+    print(f"confusion matrix {utility['cm']}")

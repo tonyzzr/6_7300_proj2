@@ -63,26 +63,37 @@ class UtilityLoss(nn.Module):
         for patient_no in range(len(targets)):
 
             t = current_times[patient_no]
-            t_sepsis = sepsis_times[patient_no]
             is_septic = sepsis_flags[patient_no]
+            t_sepsis = sepsis_times[patient_no] - self.dt_optimal
+
 
 
             if t <= t_sepsis + self.dt_late:
-                # TP
-                if t <= t_sepsis + self.dt_optimal:
-                    u_TP[patient_no] = max(self.m_1 * (t - t_sepsis) + self.b_1, self.u_fp)
-                elif t <= t_sepsis + self.dt_late:
-                    u_TP[patient_no] = self.m_2 * (t - t_sepsis) + self.b_2
 
+                ## in the case that is_septic == True
+                # TP
+                if is_septic:
+                    if t <= t_sepsis + self.dt_optimal:
+                        u_TP[patient_no] = max(self.m_1 * (t - t_sepsis) + self.b_1, self.u_fp)
+                    elif t <= t_sepsis + self.dt_late:
+                        u_TP[patient_no] = self.m_2 * (t - t_sepsis) + self.b_2
+
+                    # FN
+                    if t <= t_sepsis + self.dt_optimal:
+                        u_FN[patient_no] = 0
+                    elif t <= t_sepsis + self.dt_late:
+                        u_FN[patient_no] = self.m_3 * (t - t_sepsis) + self.b_3
+                
+                ## in the case that is_septic == False
+                else:
+                    
+                    # print('not septic patient')
+                    u_TP[patient_no] = 0
+                    u_FN[patient_no] = 0
+
+                
                 # FP
                 u_FP[patient_no] = self.u_fp
-
-
-                # FN
-                if t <= t_sepsis + self.dt_optimal:
-                    u_FN[patient_no] = 0
-                elif t <= t_sepsis + self.dt_late:
-                    u_FN[patient_no] = self.m_3 * (t - t_sepsis) + self.b_3
 
                 # TN
                 u_TN[patient_no] = self.u_tn
@@ -91,6 +102,7 @@ class UtilityLoss(nn.Module):
         u_FP = u_FP.to(targets.device)
         u_TN = u_TN.to(targets.device)
         u_FN = u_FN.to(targets.device)
+
         
         u_func = predictions * (u_TP*sepsis_flags + u_FP*(1-sepsis_flags)) \
             + (1-predictions) *  (u_FN*sepsis_flags + u_TN*(1-sepsis_flags))
